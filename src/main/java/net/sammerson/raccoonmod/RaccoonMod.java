@@ -1,8 +1,11 @@
 package net.sammerson.raccoonmod;
 
 import net.fabricmc.api.ModInitializer;
+import net.sammerson.raccoonmod.item.ModItems;
+import net.sammerson.raccoonmod.util.ModRegistries;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.bernie.geckolib3.GeckoLib;
 
 public class RaccoonMod implements ModInitializer {
 
@@ -11,6 +14,12 @@ public class RaccoonMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+
+		ModRegistries.registerModStuff();
+
+		ModItems.registerModItems();
+
+		GeckoLib.initialize();
 
 	}
 }
