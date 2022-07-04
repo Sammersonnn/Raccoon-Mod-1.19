@@ -2,6 +2,7 @@ package net.sammerson.raccoonmod.entity.custom;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.ai.goal.*;
 import net.minecraft.entity.attribute.DefaultAttributeContainer;
 import net.minecraft.entity.attribute.EntityAttributes;
@@ -9,9 +10,10 @@ import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.data.DataTracker;
 import net.minecraft.entity.data.TrackedData;
 import net.minecraft.entity.data.TrackedDataHandlerRegistry;
-import net.minecraft.entity.passive.AnimalEntity;
-import net.minecraft.entity.passive.PassiveEntity;
-import net.minecraft.entity.passive.TameableEntity;
+import net.minecraft.entity.mob.Angerable;
+import net.minecraft.entity.mob.CreeperEntity;
+import net.minecraft.entity.mob.GhastEntity;
+import net.minecraft.entity.passive.*;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -23,7 +25,9 @@ import net.minecraft.sound.SoundEvent;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
+import net.minecraft.util.TimeHelper;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.intprovider.UniformIntProvider;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.Nullable;
 import software.bernie.geckolib3.core.IAnimatable;
@@ -34,8 +38,16 @@ import software.bernie.geckolib3.core.event.predicate.AnimationEvent;
 import software.bernie.geckolib3.core.manager.AnimationData;
 import software.bernie.geckolib3.core.manager.AnimationFactory;
 
-public class RaccoonEntity extends TameableEntity implements IAnimatable {
+import java.util.UUID;
+
+
+
+public class RaccoonEntity extends TameableEntity implements IAnimatable, Angerable {
     private AnimationFactory factory = new AnimationFactory(this);
+    private static final TrackedData<Integer> ANGER_TIME;
+    private static final UniformIntProvider ANGER_TIME_RANGE = TimeHelper.betweenSeconds(20, 39);
+    @Nullable
+    private UUID angryAt;
 
     protected RaccoonEntity(EntityType<? extends TameableEntity> entityType, World world) {
         super(entityType, world);
@@ -43,13 +55,19 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
 
     @Nullable
     @Override
-    public TameableEntity createChild(ServerWorld world, PassiveEntity entity) {
-        return ModEntities.RACCOON.create(world);
+    public RaccoonEntity createChild(ServerWorld world, PassiveEntity entity) {
+        RaccoonEntity raccoonEntity = ModEntities.RACCOON.create(world);
+        UUID uUID = this.getOwnerUuid();
+        if (uUID != null) {
+            raccoonEntity.setOwnerUuid(uUID);
+            raccoonEntity.setTamed(true);
+        }
+        return raccoonEntity;
     }
 
     @Override
     public boolean isBreedingItem(ItemStack stack) {
-        return stack.getItem() == Items.SWEET_BERRIES;
+        return stack.getItem() == Items.APPLE;
     }
 
     public static DefaultAttributeContainer.Builder setAttributes() {
@@ -63,14 +81,25 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
     protected void initGoals() {
         this.goalSelector.add(0, new SwimGoal(this));
         this.goalSelector.add(1, new SitGoal(this));
-        this.goalSelector.add(2, new FollowOwnerGoal(this, 0.75f, 10.0F, 2.0F, false));
-        this.goalSelector.add(3, new WanderAroundPointOfInterestGoal(this, 0.75f, false));
-        this.goalSelector.add(4, new WanderAroundFarGoal(this, 0.75f, 1));
-        this.goalSelector.add(5, new LookAroundGoal(this));
+        this.goalSelector.add(2, new MeleeAttackGoal(this, 1.0D, true));
+        this.goalSelector.add(3, new FollowOwnerGoal(this, 0.75f, 10.0F, 2.0F, false));
+        this.goalSelector.add(4, new WanderAroundPointOfInterestGoal(this, 0.75f, false));
+        this.goalSelector.add(5, new WanderAroundFarGoal(this, 0.75f, 1));
         this.goalSelector.add(6, new LookAtEntityGoal(this, PlayerEntity.class, 8.0f));
+        this.goalSelector.add(7, new LookAroundGoal(this));
 
         this.targetSelector.add(1, new AnimalMateGoal(this, 1.0));
+        this.targetSelector.add(2, new TrackOwnerAttackerGoal(this));
+
+       //this.targetSelector.add(3, new ActiveTargetGoal(this, PlayerEntity.class, 10, true, false, this::shouldAngerAt));
+
+        this.targetSelector.add(4, new AttackWithOwnerGoal(this));
+        this.targetSelector.add(5, (new RevengeGoal(this, new Class[0])).setGroupRevenge(new Class[0]));
+
+        this.targetSelector.add(6, new UniversalAngerGoal(this, true));
     }
+
+
     private <E extends IAnimatable> PlayState predicate(AnimationEvent<E> event) {
         if (event.isMoving()) {
             event.getController().setAnimation(new AnimationBuilder().addAnimation("animation.raccoon.walk", true));
@@ -126,7 +155,7 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
         ItemStack itemstack = player.getStackInHand(hand);
         Item item = itemstack.getItem();
 
-        Item itemForTaming = Items.APPLE;
+        Item itemForTaming = Items.IRON_NUGGET;
 
         if(isBreedingItem(itemstack)) {
             return super.interactMob(player, hand);
@@ -164,6 +193,24 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
         return super.interactMob(player, hand);
     }
 
+    public boolean canAttackWithOwner(LivingEntity target, LivingEntity owner) {
+        if (!(target instanceof CreeperEntity) && !(target instanceof GhastEntity)) {
+            if (target instanceof RaccoonEntity) {
+                RaccoonEntity raccoonEntity = (RaccoonEntity) target;
+                return !raccoonEntity.isTamed() || raccoonEntity.getOwner() != owner;
+            } else if (target instanceof PlayerEntity && owner instanceof PlayerEntity && !((PlayerEntity)owner).shouldDamagePlayer((PlayerEntity)target)) {
+                return false;
+            } else if (target instanceof AbstractHorseEntity && ((AbstractHorseEntity)target).isTame()) {
+                return false;
+            } else {
+                return !(target instanceof TameableEntity) || !((TameableEntity)target).isTamed();
+            }
+        } else {
+            return false;
+        }
+    }
+
+
     public void setSit(boolean sitting) {
         this.dataTracker.set(SITTING, sitting);
         super.setSitting(sitting);
@@ -173,6 +220,30 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
         return this.dataTracker.get(SITTING);
     }
 
+    public int getAngerTime() {
+        return (Integer)this.dataTracker.get(ANGER_TIME);
+    }
+
+    public void setAngerTime(int angerTime) {
+        this.dataTracker.set(ANGER_TIME, angerTime);
+    }
+
+    public void chooseRandomAngerTime() {
+        this.setAngerTime(ANGER_TIME_RANGE.get(this.random));
+    }
+
+    @Nullable
+    public UUID getAngryAt() {
+        return this.angryAt;
+    }
+
+    public void setAngryAt(@Nullable UUID angryAt) {
+        this.angryAt = angryAt;
+    }
+static {
+    ANGER_TIME = DataTracker.registerData(RaccoonEntity.class, TrackedDataHandlerRegistry.INTEGER);
+
+}
     @Override
     public void setTamed(boolean tamed) {
         super.setTamed(tamed);
@@ -213,4 +284,7 @@ public class RaccoonEntity extends TameableEntity implements IAnimatable {
         super.initDataTracker();
         this.dataTracker.startTracking(SITTING, false);
     }
+
+
+
 }
